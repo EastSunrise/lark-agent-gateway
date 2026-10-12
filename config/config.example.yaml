@@ -1,0 +1,31 @@
+runtime:
+  maxConcurrentTasks: 3
+  # stateDir: /absolute/path/to/state  # 默认 ~/.lark-agent-gateway
+  idleSessionMinutes: 30
+feishu:
+  requireMentionInGroup: true
+agents:
+  codex:
+    enabled: true
+    command: codex-acp
+    groupRead: true
+repos:
+  gateway:
+    path: D:/Projects/lark-agent-gateway
+    defaultAgent: codex
+security:
+  groupRead:
+    network: false
+    deny:
+      - "**/.env"
+      - "**/.env.*"
+      - "**/*.pem"
+      - "**/*.key"
+      - "**/*.p12"
+      - "**/*.pfx"
+      - "**/.npmrc"
+      - "**/.pypirc"
+      - "**/credentials*"
+      - "**/secrets*"
+worktrees:
+  retentionDays: 7

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env.local
+.npm-cache/
+.state/
+.test-tmp/
+config/config.yaml
+coverage/
+*.log

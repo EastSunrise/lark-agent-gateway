@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS owner_identity(open_id TEXT PRIMARY KEY,claimed_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS chat_bindings(chat_id TEXT PRIMARY KEY,repo_id TEXT NOT NULL,default_agent TEXT NOT NULL,bound_by TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS preferences(chat_id TEXT PRIMARY KEY,repo_id TEXT,agent_name TEXT);
+CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY,lookup_key TEXT NOT NULL,chat_id TEXT NOT NULL,thread_key TEXT,repo_id TEXT NOT NULL,agent_name TEXT NOT NULL,repo_revision TEXT,view_json TEXT,summary TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL,last_active_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS conversations_lookup ON conversations(lookup_key,active);
+CREATE TABLE IF NOT EXISTS agent_sessions(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id),acp_session_id TEXT,profile TEXT NOT NULL,cwd TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id),agent_session_id TEXT REFERENCES agent_sessions(id),requester_id TEXT NOT NULL,input_message_id TEXT NOT NULL UNIQUE,input_text TEXT NOT NULL,chat_type TEXT NOT NULL,status TEXT NOT NULL,started_at INTEGER,finished_at INTEGER,error TEXT,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id),session_id TEXT NOT NULL,requester TEXT NOT NULL,payload_json TEXT NOT NULL,created_at INTEGER NOT NULL,status TEXT NOT NULL,expires_at INTEGER NOT NULL,decided_by TEXT,decided_at INTEGER,card_message_id TEXT);
+CREATE TABLE IF NOT EXISTS processed_messages(message_id TEXT PRIMARY KEY,processed_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);
+INSERT OR IGNORE INTO schema_migrations VALUES(1,unixepoch()*1000);

@@ -1,0 +1,43 @@
+import { join } from 'node:path';
+import { openSync,writeFileSync,readFileSync,unlinkSync } from 'node:fs';
+import { loadConfig,stateDirectory,privateDirectory } from './config/load.js';
+import { openDatabase } from './storage/database.js';
+import { Store } from './storage/repositories.js';
+import { OwnerService } from './identity/owner-service.js';
+import { RepoRegistry } from './repos/registry.js';
+import { RepoViewManager } from './repos/repo-view-manager.js';
+import { ConversationManager } from './conversations/conversation-manager.js';
+import { TaskManager } from './tasks/task-manager.js';
+import { connectChannel } from './channel/lark-channel.js';
+import { createAudit } from './audit/audit.js';
+import { Gateway } from './gateway.js';
+import { securityProbe } from './agents/codex/security.js';
+const config=loadConfig();const stateDir=stateDirectory(config);privateDirectory(stateDir);
+const lock=join(stateDir,'gateway.pid');
+try{const pid=Number(readFileSync(lock,'utf8'));try{process.kill(pid,0);throw new Error('Gateway already running (PID '+pid+')')}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e}unlinkSync(lock)}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}
+const fd=openSync(lock,'wx',0o600);writeFileSync(fd,String(process.pid));
+const db=openDatabase(stateDir);const store=new Store(db);store.recover();
+const audit=createAudit(stateDir);const owner=new OwnerService(db,config.owner.openId);
+const code=owner.bootstrap();if(code)console.log('Owner claim code: '+code+' (10 分钟有效；私聊 /claim '+code+')');
+const repos=new RepoRegistry();await repos.initialize(config);
+const views=new RepoViewManager(repos,stateDir);
+store.db.prepare('UPDATE conversations SET active=0 WHERE last_active_at<? AND id NOT IN (SELECT conversation_id FROM tasks WHERE status IN (\'RECEIVED\',\'RUNNING\',\'WAITING_APPROVAL\'))').run(Date.now()-config.worktrees.retentionDays*86400000);
+const refs=new Set((db.prepare('SELECT view_json FROM conversations WHERE active=1 AND view_json IS NOT NULL').all() as {view_json:string}[]).map(x=>JSON.parse(x.view_json).cwd as string));
+await views.cleanup(refs,config.worktrees.retentionDays);
+let groupSafe=false;
+if(config.agents.codex?.groupRead){
+  console.log('Validating group-read security...');
+  const report=await securityProbe(config,stateDir);groupSafe=report.passed;
+  console.log(report.reason);audit.info({groupRead:report.passed,checks:report.checks},'security probe');
+}
+const channel=connectChannel();const conversations=new ConversationManager(store);
+const tasks=new TaskManager(config,store,owner,views,conversations,channel,stateDir,audit);
+const gateway=new Gateway(config,store,owner,repos,tasks,channel,groupSafe);
+channel.on('message',async msg=>{try{await gateway.message(msg)}catch(e){audit.error({chatId:msg.chatId,errorType:e instanceof Error?e.name:'Error'},'message failure');await channel.send(msg.chatId,{markdown:'无法处理：'+(e instanceof Error?e.message:'内部错误')},{replyTo:msg.messageId,replyInThread:msg.chatType==='group'})}});
+channel.on('cardAction',event=>gateway.cardAction(event));
+channel.on('error',()=>audit.error('channel error'));
+let stopping=false;
+async function shutdown(){if(stopping)return;stopping=true;await channel.disconnect();await tasks.close();db.close();unlinkSync(lock);process.exitCode=0}
+process.once('SIGINT',()=>void shutdown());process.once('SIGTERM',()=>void shutdown());
+process.once('exit',()=>{try{unlinkSync(lock)}catch{}});
+await channel.connect();console.log('Gateway connected. Feishu → ACP → Codex is ready.');
