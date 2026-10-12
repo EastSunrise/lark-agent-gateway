@@ -8,6 +8,7 @@ import type { Profile } from '../../policy/policy-engine.js';
 import type { RepoView } from '../../repos/repo-view-manager.js';
 import type { Launch } from '../../acp/process-manager.js';
 import { codexConfig } from './profiles.js';
+import {protectPath} from '../../security/private-path.js';
 const require=createRequire(import.meta.url);
 export function adapterEntry(){return require.resolve('@agentclientprotocol/codex-acp')}
 export function launchCodex(config:Config,agent:string,profile:Profile,view:RepoView,stateDir:string,sessionId:string):Launch{
@@ -21,7 +22,7 @@ export function launchCodex(config:Config,agent:string,profile:Profile,view:Repo
   if(profile==='group-read'){
     const home=join(stateDir,'runtime',sessionId);privateDirectory(home);
     const source=join(process.env.CODEX_HOME??join(homedir(),'.codex'),'auth.json');
-    if(existsSync(source))copyFileSync(source,join(home,'auth.json'));
+    if(existsSync(source)){copyFileSync(source,join(home,'auth.json'));protectPath(join(home,'auth.json'),false)}
     writeFileSync(join(home,'config.toml'),'# Gateway isolated configuration\n',{mode:0o600});
     env.CODEX_HOME=home;
   }

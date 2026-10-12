@@ -1,6 +1,6 @@
 import type { GatewayAgentEvent } from '../acp/event-normalizer.js';
 import type { ChannelPort } from './reply.js';
-import type { SendOptions } from '@larksuite/channel';
+import type { SendOptions,CardStreamController,SendResult } from '@larksuite/channel';
 import { redact } from '../security/redactor.js';
 export interface CardState {taskId:string;repo:string;agent:string;mode:string;status:string;current:string;text:string;files:Set<string>}
 export function taskCard(s:CardState,group:boolean){
@@ -12,8 +12,17 @@ export function taskCard(s:CardState,group:boolean){
 }
 export class TaskPresenter {
   private messageId?:string;private timer?:ReturnType<typeof setTimeout>;private pending=Promise.resolve();private last=0;
+  private controller?:CardStreamController;private endStream?:()=>void;private streaming?:Promise<SendResult>;
   constructor(private channel:ChannelPort,private chat:string,private opts:SendOptions,public state:CardState,private group:boolean){}
-  async start(){this.messageId=(await this.channel.send(this.chat,{card:taskCard(this.state,this.group)},this.opts)).messageId}
+  async start(){
+    if(!this.channel.stream){this.messageId=(await this.channel.send(this.chat,{card:taskCard(this.state,this.group)},this.opts)).messageId;return}
+    let ready!:()=>void;let rejectReady!:(e:unknown)=>void;
+    const started=new Promise<void>((resolve,reject)=>{ready=resolve;rejectReady=reject});
+    const done=new Promise<void>(resolve=>{this.endStream=resolve});
+    this.streaming=this.channel.stream(this.chat,{card:{initial:taskCard(this.state,this.group),producer:async controller=>{this.controller=controller;this.messageId=controller.messageId;ready();await done}}},this.opts);
+    void this.streaming.catch(rejectReady);
+    await started;
+  }
   event(event:GatewayAgentEvent){
     if(event.type==='assistant_delta')this.state.text+=event.text;
     else if(event.type==='file_change')event.paths.forEach(p=>this.state.files.add(p));
@@ -25,8 +34,8 @@ export class TaskPresenter {
   }
   schedule(){if(!this.timer)this.timer=setTimeout(()=>{this.timer=undefined;void this.flush().catch(()=>{})},Math.max(0,1000-(Date.now()-this.last)))}
   async flush(){
-    this.pending=this.pending.catch(()=>{}).then(async()=>{if(this.messageId){await this.channel.updateCard(this.messageId,taskCard(this.state,this.group));this.last=Date.now()}});
+    this.pending=this.pending.catch(()=>{}).then(async()=>{if(this.messageId){if(this.controller)await this.controller.update(taskCard(this.state,this.group));else await this.channel.updateCard(this.messageId,taskCard(this.state,this.group));this.last=Date.now()}});
     return this.pending;
   }
-  async finish(status:string,error?:string){if(this.timer)clearTimeout(this.timer);this.timer=undefined;this.state.status=status;if(error)this.state.text='任务结束：'+error;await this.flush()}
+  async finish(status:string,error?:string){if(this.timer)clearTimeout(this.timer);this.timer=undefined;this.state.status=status;if(error)this.state.text='任务结束：'+error;try{await this.flush()}finally{this.endStream?.();await this.streaming?.catch(()=>{})}}
 }

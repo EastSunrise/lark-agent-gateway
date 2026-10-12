@@ -7,6 +7,7 @@ import type { RepoRegistry } from './registry.js';
 export interface RepoView {repoId:string;revision:string;cwd:string;readRoots:string[]}
 export class RepoViewManager {
   constructor(private registry:RepoRegistry,private stateDir:string){}
+  ownerLockKey(repoId:string){const root=this.registry.get(repoId).path;return process.platform==='win32'?root.toLowerCase():root}
   async createGroupView(repoId:string):Promise<RepoView>{
     const repo=this.registry.get(repoId);const {stdout}=await execa('git',['-C',repo.path,'rev-parse','HEAD']);const revision=stdout.trim();
     const parent=join(this.stateDir,'worktrees',repoId,revision);privateDirectory(parent);const cwd=join(parent,nanoid());

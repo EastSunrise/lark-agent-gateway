@@ -9,6 +9,7 @@ import type { ChannelPort } from './presenter/reply.js';
 import { replyOptions } from './presenter/reply.js';
 import { parseCommand,help } from './commands/command-router.js';
 import { policy } from './policy/policy-engine.js';
+import {redact} from './security/redactor.js';
 export class Gateway{
   private conversations:ConversationManager;
   constructor(private config:Config,private store:Store,private owner:OwnerService,private repos:RepoRegistry,private tasks:TaskManager,private channel:ChannelPort,private groupSafe:boolean){this.conversations=new ConversationManager(store)}
@@ -16,7 +17,7 @@ export class Gateway{
     if(msg.senderIsBot||msg.senderType==='bot')return;
     if(msg.chatType==='group'&&(!msg.mentionedBot||msg.mentionAll))return;
     if(!this.store.dedup(msg.messageId))return;
-    const reply=(text:string)=>this.channel.send(msg.chatId,{markdown:text},replyOptions(msg));
+    const reply=(text:string)=>this.channel.send(msg.chatId,{markdown:msg.chatType==='group'?redact(text):text},replyOptions(msg));
     const dm=msg.chatType==='p2p';const owner=this.owner.isOwner(msg.senderId);const cmd=parseCommand(msg.content);
     if(cmd?.name==='/claim'){
       await reply(this.owner.claim(msg.senderId,cmd.args[0]??'',dm)?'Owner 认领成功。发送 /help 查看命令。':'认领失败、已过期或 Owner 已设置。');return;

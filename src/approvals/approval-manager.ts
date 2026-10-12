@@ -8,17 +8,19 @@ import { redact } from '../security/redactor.js';
 const cancelled:RequestPermissionResponse={outcome:{outcome:'cancelled'}};
 export class ApprovalManager{
   private waiting=new Map<string,{resolve:(r:RequestPermissionResponse)=>void;request:RequestPermissionRequest;timer:ReturnType<typeof setTimeout>;taskId:string}>();
-  constructor(private store:Store,private owner:OwnerService,private channel:ChannelPort,private onState:(taskId:string,state:'WAITING_APPROVAL'|'RUNNING')=>void){}
+  constructor(private store:Store,private owner:OwnerService,private channel:ChannelPort,private onState:(taskId:string,state:'WAITING_APPROVAL'|'RUNNING')=>void,private ttlMs=600000){}
   async request(task:Task,sessionId:string,profile:string,request:RequestPermissionRequest){
     if(profile!=='owner-write'||!this.owner.isOwner(task.requester_id))return cancelled;
     const allow=request.options.find(x=>x.kind==='allow_once');if(!allow)return cancelled;
     const id=nanoid();const now=Date.now();
     // Only the public permission subject/reason is retained. No raw tool payload/source.
-    const payload={options:request.options.map(x=>({optionId:x.optionId,kind:x.kind})),subject:redact(request.toolCall.title??'Permission'),reason:'Agent requested additional capability'};
-    this.store.db.prepare('INSERT INTO approvals(id,task_id,session_id,requester,payload_json,created_at,status,expires_at) VALUES(?,?,?,?,?,?,?,?)').run(id,task.id,sessionId,task.requester_id,JSON.stringify(payload),now,'PENDING',now+600000);
+    const raw=request.toolCall.rawInput as Record<string,unknown>|null;
+    const reason=raw&&typeof raw==='object'&&typeof raw.reason==='string'?raw.reason:'Agent requested additional capability';
+    const payload={options:request.options.map(x=>({optionId:x.optionId,kind:x.kind})),subject:redact(request.toolCall.title??'Permission'),reason:redact(reason)};
+    this.store.db.prepare('INSERT INTO approvals(id,task_id,session_id,requester,payload_json,created_at,status,expires_at) VALUES(?,?,?,?,?,?,?,?)').run(id,task.id,sessionId,task.requester_id,JSON.stringify(payload),now,'PENDING',now+this.ttlMs);
     this.onState(task.id,'WAITING_APPROVAL');
     const decision=new Promise<RequestPermissionResponse>(resolve=>{
-      const timer=setTimeout(()=>this.settle(id,'EXPIRED'),600000);timer.unref();this.waiting.set(id,{resolve,request,timer,taskId:task.id});
+      const timer=setTimeout(()=>this.settle(id,'EXPIRED'),this.ttlMs);timer.unref();this.waiting.set(id,{resolve,request,timer,taskId:task.id});
     });
     try{
       const conv=this.store.conversation(task.conversation_id);

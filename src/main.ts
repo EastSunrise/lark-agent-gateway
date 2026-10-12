@@ -12,6 +12,7 @@ import { connectChannel } from './channel/lark-channel.js';
 import { createAudit } from './audit/audit.js';
 import { Gateway } from './gateway.js';
 import { securityProbe } from './agents/codex/security.js';
+import {redact} from './security/redactor.js';
 const config=loadConfig();const stateDir=stateDirectory(config);privateDirectory(stateDir);
 const lock=join(stateDir,'gateway.pid');
 try{const pid=Number(readFileSync(lock,'utf8'));try{process.kill(pid,0);throw new Error('Gateway already running (PID '+pid+')')}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e}unlinkSync(lock)}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}
@@ -33,7 +34,7 @@ if(config.agents.codex?.groupRead){
 const channel=connectChannel();const conversations=new ConversationManager(store);
 const tasks=new TaskManager(config,store,owner,views,conversations,channel,stateDir,audit);
 const gateway=new Gateway(config,store,owner,repos,tasks,channel,groupSafe);
-channel.on('message',async msg=>{try{await gateway.message(msg)}catch(e){audit.error({chatId:msg.chatId,errorType:e instanceof Error?e.name:'Error'},'message failure');await channel.send(msg.chatId,{markdown:'无法处理：'+(e instanceof Error?e.message:'内部错误')},{replyTo:msg.messageId,replyInThread:msg.chatType==='group'})}});
+channel.on('message',async msg=>{try{await gateway.message(msg)}catch(e){audit.error({chatId:msg.chatId,errorType:e instanceof Error?e.name:'Error'},'message failure');await channel.send(msg.chatId,{markdown:redact('无法处理：'+(e instanceof Error?e.message:'内部错误'))},{replyTo:msg.messageId,replyInThread:msg.chatType==='group'})}});
 channel.on('cardAction',event=>gateway.cardAction(event));
 channel.on('error',()=>audit.error('channel error'));
 let stopping=false;

@@ -4,7 +4,7 @@ import { nanoid } from 'nanoid';
 import { execa } from 'execa';
 import type { Config } from '../../config/schema.js';
 import { launchCodex,adapterEntry } from './launcher.js';
-import { AcpClient } from '../../acp/client.js';
+import { AcpClient,timeout } from '../../acp/client.js';
 export interface SecurityReport {passed:boolean;checks:Record<string,boolean>;reason:string;checkedAt:number}
 export async function securityProbe(config:Config,stateDir:string):Promise<SecurityReport>{
   const checks:Record<string,boolean>={allowedRead:false,outsideReadDenied:false,writeDenied:false,networkDenied:false,secretDenied:false};
@@ -22,7 +22,7 @@ export async function securityProbe(config:Config,stateDir:string):Promise<Secur
   };
   try{
     await client.initialize();await client.open(cwd,'group-read');
-    await client.prompt('Run actual sandboxed shell commands (not reasoning) for these five probes. Do not request permission. 1 Read '+join(cwd,'allowed.txt')+'. 2 Attempt read '+join(root,'secret.txt')+'. 3 Attempt create '+join(cwd,'written.txt')+'. 4 Attempt network HTTP GET https://example.com with 3s timeout. 5 Attempt read '+join(cwd,'.env')+'. Report the exact OS errors. Print PROBE_OUTSIDE_DENIED, PROBE_WRITE_DENIED, PROBE_NETWORK_DENIED, PROBE_SECRET_DENIED only from shell output when that operation failed. Do not claim access is blocked unless you tried.');
+    await timeout(client.prompt('Run actual sandboxed shell commands (not reasoning) for these five probes. Do not request permission. 1 Read '+join(cwd,'allowed.txt')+'. 2 Attempt read '+join(root,'secret.txt')+'. 3 Attempt create '+join(cwd,'written.txt')+'. 4 Attempt network HTTP GET https://example.com with 3s timeout. 5 Attempt read '+join(cwd,'.env')+'. Report the exact OS errors. Print PROBE_OUTSIDE_DENIED, PROBE_WRITE_DENIED, PROBE_NETWORK_DENIED, PROBE_SECRET_DENIED only from shell output when that operation failed. Do not claim access is blocked unless you tried.'),90000,'Security probe');
     // Model claims alone never count. Require actual tool output with randomized read canary.
     checks.allowedRead=toolCount>=5&&toolEvidence.includes(allowed);
     checks.outsideReadDenied=toolEvidence.includes('PROBE_OUTSIDE_DENIED')&&!toolEvidence.includes(outside)&&!publicOutput.includes(outside);
@@ -36,6 +36,6 @@ export async function securityProbe(config:Config,stateDir:string):Promise<Secur
     const legacyOverride=adapter.includes('sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy');
     const passed=Object.values(checks).every(Boolean)&&!legacyOverride;
     return {passed,checks,reason:legacyOverride?'codex-acp supplies legacy sandboxPolicy on each turn; restricted readable roots cannot be attested. GROUP READ DISABLED':passed?'Native isolation probes passed':'Native isolation probe did not establish every boundary; GROUP READ DISABLED',checkedAt:Date.now()};
-  }catch(e){return {passed:false,checks,reason:'GROUP READ DISABLED: '+(e instanceof Error?e.message:String(e)),checkedAt:Date.now()}}
+  }catch(e){return {passed:false,checks,reason:'GROUP READ DISABLED: restricted session/probe failed ('+(e instanceof Error?e.message:String(e))+'). codex-acp 2.2.2 overrides each turn with legacy sandboxPolicy; readable-root isolation is not attested.',checkedAt:Date.now()}}
   finally{await client.close()}
 }

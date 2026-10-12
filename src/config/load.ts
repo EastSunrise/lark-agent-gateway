@@ -1,11 +1,13 @@
-import { readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { parseEnv } from 'node:util';
 import { parse } from 'yaml';
 import { configSchema, type Config } from './schema.js';
+import {protectPath} from '../security/private-path.js';
 export function loadEnv(path = resolve('.env.local')) {
   if (!existsSync(path)) return;
+  protectPath(path,false);
   const vars = process.env;
   for (const [key,value] of Object.entries(parseEnv(readFileSync(path,'utf8')))) vars[key] ??= value;
 }
@@ -18,5 +20,5 @@ export function stateDirectory(config: Config) {
 }
 export function privateDirectory(path:string) {
   mkdirSync(path,{recursive:true,mode:0o700});
-  if(process.platform!=='win32') chmodSync(path,0o700);
+  protectPath(path,true);
 }
