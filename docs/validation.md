@@ -11,7 +11,7 @@
 | 飞书凭证 / WebSocket handshake | 通过 |
 | 已配置机器人身份 | LarkCli4Agent，与用户截图一致 |
 | Windows 独立后台启动 | 已实现并运行；修复临时工具会话结束后不接收消息的问题 |
-| 飞书认领、真实消息 → Codex → 回复 | 等待实际用户消息验证 |
+| 飞书认领、真实消息 → Codex → 回复 | 通过：2026-10-13 21:03 收到私聊，Owner 认领成功，真实 ACP 任务 COMPLETED，回复卡片完成且无错误 |
 | 实际飞书审批按钮 / 取消按钮 | 尚未实际点击验收；自动化策略测试通过 |
 | Group native read isolation | 失败，GROUP READ DISABLED |
 | Doctor 全部关键项 | 未通过，Group security probe 失败 |
