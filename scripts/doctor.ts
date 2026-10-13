@@ -9,6 +9,8 @@ import { AcpClient,timeout } from '../src/acp/client.js';
 import { launchCodex,adapterEntry } from '../src/agents/codex/launcher.js';
 import { securityProbe } from '../src/agents/codex/security.js';
 import { connectChannel } from '../src/channel/lark-channel.js';
+import {Store} from '../src/storage/repositories.js';
+import {DefaultRepoService} from '../src/repos/default-repo-service.js';
 let failed=false;
 async function check(name:string,fn:()=>Promise<unknown>|unknown){try{const result=await fn();console.log('PASS '+name+(typeof result==='string'?' · '+result:''));return result}catch(e){failed=true;console.log('FAIL '+name+' · '+(e instanceof Error?e.message:'error'));return undefined}}
 await check('Node version',()=>{if(Number(process.versions.node.split('.')[0])<22)throw new Error('Node >=22 required');return process.version});
@@ -17,6 +19,7 @@ await check('State directory',()=>privateDirectory(stateDir));
 await check('SQLite',()=>{const db=openDatabase(stateDir);db.prepare('SELECT 1').get();db.close()});
 await check('Git',async()=>(await execa('git',['--version'])).stdout);
 const registry=new RepoRegistry();await check('Repo existence / canonical Git roots',()=>registry.initialize(config));
+await check('Managed Repo registry',async()=>{const db=openDatabase(stateDir);try{await new DefaultRepoService(config,new Store(db),registry,stateDir).initialize()}finally{db.close()}});
 await check('Feishu credentials',()=>{if(!process.env.LARK_APP_ID||!process.env.LARK_APP_SECRET)throw new Error('Missing .env.local credentials')});
 await check('codex-acp executable',()=>adapterEntry());
 const repo=registry.list()[0];

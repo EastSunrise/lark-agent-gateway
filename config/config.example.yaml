@@ -4,6 +4,13 @@ runtime:
   idleSessionMinutes: 30
 feishu:
   requireMentionInGroup: true
+  groupReplyMode: chat  # chat 普通群聊；thread 话题
+  groupConversationScope: chat  # chat 全群共享；sender 每人独立
+repoDefaults:
+  enabled: true
+  defaultAgent: codex
+  groupScope: group  # group 每个群独立；shared 所有未绑定群共享默认 Repo
+  # root: D:/Work/agent-repos  # 默认 stateDir/repos
 agents:
   codex:
     enabled: true

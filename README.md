@@ -3,7 +3,7 @@
 本机 Agent Control Plane：飞书官方 Channel SDK → ACP stable v1 → codex-acp →
 Codex App Server → 本机 Git Repo → 飞书任务卡片。
 
-已实现 Owner 私聊/群聊写任务、仓库选择和绑定、持久会话、任务排队、Repo 写锁、
+已实现 Owner 私聊/群聊写任务、仓库选择和绑定、群默认自动建仓库、持久会话、任务排队、Repo 写锁、
 公开摘要恢复、审批一次、拒绝/超时、取消、去重、Streaming 卡片、审计和 Doctor。
 群成员任务的 native readable-root 隔离必须通过安全验证。
 **当前固定 codex-acp 2.2.2 的受限会话/探针未通过，Group Read 默认禁用。**
@@ -30,7 +30,8 @@ LARK_APP_ID=cli_...
 LARK_APP_SECRET=...
 ```
 
-config/config.yaml 只允许预注册的 Git root 绝对路径，禁止聊天输入本机路径：
+config/config.yaml 可注册已有 Git root 绝对路径；未绑定群可自动创建受管仓库。
+禁止聊天输入任意本机路径：
 
 ```yaml
 runtime:
@@ -44,6 +45,13 @@ repos:
   gateway:
     path: D:/Projects/lark-agent-gateway
     defaultAgent: codex
+feishu:
+  groupReplyMode: chat
+  groupConversationScope: chat
+repoDefaults:
+  enabled: true
+  defaultAgent: codex
+  groupScope: group
 ```
 
 默认状态位置 ~/.lark-agent-gateway；runtime.stateDir 可配置。此工作区开发配置使用
@@ -87,21 +95,27 @@ Doctor 真实检查 ACP initialize、认证/会话创建、Feishu WebSocket（--
 首次认领成功后，SQLite 永久保存 Owner 身份。也可通过 owner.openId 明确配置，
 但不得覆盖已有不同 Owner。其他成员私聊不会运行 Agent。
 
-群聊：邀请机器人，Owner 发 `@机器人 /repo bind gateway`。之后 Owner 可
-`@机器人 修改代码并跑测试`，使用真实工作区写会话。
+群聊：邀请机器人，Owner 直接发 `@机器人 创建一个测试文件并运行测试`。
+若群尚未绑定项目，Gateway 会在 stateDir/repos 下自动创建该群独立的 Git Repo，
+初始化 README 和首个提交、持久化注册并绑定该群，然后执行任务。重启继续复用同一仓库。
+普通成员不会触发建仓库。聊天标识只用于生成固定 hash 名称，不接受聊天传入本机路径。
+已有绑定不自动替换。要操作已有项目，Owner 可发 `@机器人 /repo bind gateway`。
 群成员 `@机器人 解释模块` 只有 native security probe 通过才会运行；当前版本会收到禁用说明。
-未 @、@all、不绑定仓库均不会触发 Agent。
+未 @、@all 不触发 Agent；未绑定群的非 Owner 消息不运行 Agent。
 
 ## 命令与任务
 
 - /help：帮助。
 - /repo list、/repo use <repo>（Owner 私聊）、/repo bind <repo>（Owner 群聊）。
 - /agent list、/agent use <agent>（Owner）。
-- /new：Owner 开始新 Conversation；群成员通过新 Thread 开始。
+- /new：共享会话由 Owner 重置；每人独立模式允许成员重置自己的会话。
 - /status：当前 Conversation 最近任务状态。
 - /stop：取消自己的任务；Owner 可取消当前 Conversation 中所有任务。
 
-群会话按 root/thread + repo + agent 隔离。Owner 与 READ 使用不同进程和 Session，
+默认群聊回复直接显示在群消息流中，不创建话题；全群共用 chat + repo + agent 上下文。
+可配置 groupConversationScope: sender 让每个人各用独立上下文；
+groupReplyMode: thread 则恢复按 root/thread + repo + agent 隔离。
+切换模式会创建新的逻辑上下文，旧任务记录保留。Owner 与 READ 使用不同进程和 Session，
 READ → WRITE 通过公开历史摘要交接；WRITE 的真实工作区输出不回灌 READ。
 同 Conversation 串行，不同 Conversation 可并行；同 Repo 只有一个 WRITE Task。
 一个任务更新一张卡片，运行时每秒最多约一次；完成时可立即刷新。

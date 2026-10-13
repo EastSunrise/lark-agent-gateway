@@ -10,20 +10,21 @@ import { replyOptions } from './presenter/reply.js';
 import { parseCommand,help } from './commands/command-router.js';
 import { policy } from './policy/policy-engine.js';
 import {redact} from './security/redactor.js';
+import type {DefaultRepoService} from './repos/default-repo-service.js';
 export class Gateway{
   private conversations:ConversationManager;
-  constructor(private config:Config,private store:Store,private owner:OwnerService,private repos:RepoRegistry,private tasks:TaskManager,private channel:ChannelPort,private groupSafe:boolean){this.conversations=new ConversationManager(store)}
+  constructor(private config:Config,private store:Store,private owner:OwnerService,private repos:RepoRegistry,private tasks:TaskManager,private channel:ChannelPort,private groupSafe:boolean,private defaultRepos?:DefaultRepoService){this.conversations=new ConversationManager(store)}
   async message(msg:NormalizedMessage){
     if(msg.senderIsBot||msg.senderType==='bot')return;
     if(msg.chatType==='group'&&(!msg.mentionedBot||msg.mentionAll))return;
     if(!this.store.dedup(msg.messageId))return;
-    const reply=(text:string)=>this.channel.send(msg.chatId,{markdown:msg.chatType==='group'?redact(text):text},replyOptions(msg));
+    const reply=(text:string)=>this.channel.send(msg.chatId,{markdown:msg.chatType==='group'?redact(text):text},replyOptions(msg,this.config.feishu.groupReplyMode));
     const dm=msg.chatType==='p2p';const owner=this.owner.isOwner(msg.senderId);const cmd=parseCommand(msg.content);
     if(cmd?.name==='/claim'){
       await reply(this.owner.claim(msg.senderId,cmd.args[0]??'',dm)?'Owner 认领成功。发送 /help 查看命令。':'认领失败、已过期或 Owner 已设置。');return;
     }
     if(dm&&!owner){await reply('仅 Owner 可以私聊使用。');return}
-    const binding=this.store.binding(msg.chatId);
+    let binding=this.store.binding(msg.chatId);
     if(cmd?.name==='/help'){await reply(help);return}
     if(cmd?.name==='/repo'&&cmd.args[0]==='list'){
       if(!owner&&!binding){await reply('该群尚未绑定项目。请 Owner 使用 /repo bind <repo>');return}
@@ -37,8 +38,14 @@ export class Gateway{
       await reply('项目已选择：'+repo.id);return;
     }
     const pref=dm?this.store.preference(msg.chatId):undefined;
-    const repoId=dm?(pref?.repo_id??this.repos.list()[0]?.id):binding?.repo_id;
-    if(!repoId){await reply('该群尚未绑定项目。请 Owner 使用 /repo bind <repo>');return}
+    let repoId=dm?(pref?.repo_id??Object.keys(this.config.repos)[0]):binding?.repo_id;
+    if(!repoId&&owner&&!cmd&&this.defaultRepos&&this.config.repoDefaults.enabled){
+      const created=await this.defaultRepos.ensure(msg.chatId,dm);repoId=created.id;
+      if(dm)this.store.prefer(msg.chatId,created.id,null);
+      else{this.store.bind(msg.chatId,created.id,created.defaultAgent,msg.senderId);binding=this.store.binding(msg.chatId)}
+      await reply('已创建并选择默认项目：'+created.id);
+    }
+    if(!repoId){await reply(dm?'尚未选择项目。直接发送任务可自动创建默认 Repo。':'该群尚未绑定项目。Owner 直接 @机器人发送任务可自动创建默认 Repo，也可 /repo bind <repo>。');return}
     const repo=this.repos.get(repoId);
     const agent=(dm?pref?.agent_name:binding?.default_agent)??repo.defaultAgent;
     if(cmd?.name==='/agent'&&cmd.args[0]==='list'){await reply(Object.entries(this.config.agents).filter(([,v])=>v.enabled).map(([k])=>k).join('\n'));return}
@@ -48,10 +55,12 @@ export class Gateway{
       if(dm)this.store.prefer(msg.chatId,null,selected);else this.store.bind(msg.chatId,repoId,selected,msg.senderId);
       await reply('Agent 已选择：'+selected);return;
     }
-    const thread=msg.rootId??msg.threadId??msg.messageId;
+    const thread=this.config.feishu.groupReplyMode==='thread'
+      ?msg.rootId??msg.threadId??msg.messageId
+      :JSON.stringify(this.config.feishu.groupConversationScope==='sender'?['sender',msg.senderId]:['chat']);
     const conv=this.conversations.findOrCreate(msg.chatId,dm,thread,repoId,agent);
     if(cmd?.name==='/new'){
-      if(!owner){await reply('请创建新 Thread 开始新的只读会话。');return}
+      if(!owner&&(this.config.feishu.groupReplyMode==='thread'||this.config.feishu.groupConversationScope==='chat')){await reply('仅 Owner 可以重置共享会话。');return}
       this.conversations.reset(conv.id);await reply('新会话已准备；下一条消息将获取最新 HEAD。');return;
     }
     if(cmd?.name==='/status'){await reply(this.tasks.status(conv.id).map(x=>x.id+' '+x.status).join('\n')||'当前无任务');return}

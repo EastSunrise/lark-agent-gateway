@@ -14,18 +14,20 @@ import {ConversationManager} from '../../src/conversations/conversation-manager.
 import {TaskManager} from '../../src/tasks/task-manager.js';
 import {Gateway} from '../../src/gateway.js';
 import {ApprovalManager} from '../../src/approvals/approval-manager.js';
+import {DefaultRepoService} from '../../src/repos/default-repo-service.js';
 const cleanups:(()=>Promise<void>)[]=[];
 afterEach(async()=>{for(const fn of cleanups.splice(0))await fn()});
-async function setup(){
+async function setup(feishu:Record<string,unknown>={}){
   await mkdir('.test-tmp',{recursive:true});const root=await mkdtemp(resolve('.test-tmp/gateway-'));const repo=join(root,'repo');await mkdir(repo);
   await execa('git',['init',repo]);await writeFile(join(repo,'README.md'),'committed');
   await execa('git',['-C',repo,'add','README.md']);await execa('git',['-C',repo,'-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture']);
-  const config=configSchema.parse({repos:{test:{path:repo,defaultAgent:'fake'}},agents:{fake:{command:process.execPath,args:[resolve('tests/fixtures/fake-agent.mjs')],groupRead:false}}});
+  const config=configSchema.parse({feishu,repoDefaults:{defaultAgent:'fake'},repos:{test:{path:repo,defaultAgent:'fake'}},agents:{fake:{command:process.execPath,args:[resolve('tests/fixtures/fake-agent.mjs')],groupRead:false}}});
   const db=openDatabase(join(root,'state'));const store=new Store(db);const owner=new OwnerService(db,'ou_owner');const registry=new RepoRegistry();await registry.initialize(config);
   const sent:{to:string;input:unknown;opts:unknown}[]=[];const channel={send:async(to:string,input:unknown,opts?:unknown)=>{sent.push({to,input,opts});return {messageId:'card'+sent.length}},updateCard:async(_id:string,card:object)=>{sent.push({to:'update',input:card,opts:{}})}};
   const views=new RepoViewManager(registry,join(root,'state'));const conversations=new ConversationManager(store);
   const tasks=new TaskManager(config,store,owner,views,conversations,channel,join(root,'state'),pino({enabled:false}));
-  const gateway=new Gateway(config,store,owner,registry,tasks,channel,false);
+  const defaults=new DefaultRepoService(config,store,registry,join(root,'state'));
+  const gateway=new Gateway(config,store,owner,registry,tasks,channel,false,defaults);
   cleanups.push(async()=>{await tasks.close();db.close()});
   const msg=(id:string,text:string,sender='ou_owner',group=false):NormalizedMessage=>({messageId:id,chatId:group?'group':'dm',chatType:group?'group':'p2p',senderId:sender,content:text,rawContentType:'text',resources:[],mentions:[],mentionedBot:group,mentionAll:false,rootId:group?'thread':undefined,createTime:Date.now()});
   const wait=async(status:string)=>{for(let i=0;i<300;i++){const row=db.prepare('SELECT status FROM tasks ORDER BY created_at DESC LIMIT 1').get() as {status:string}|undefined;if(row?.status===status)return;await new Promise(r=>setTimeout(r,20))}throw new Error('Timed out waiting for '+status)};
@@ -36,6 +38,45 @@ it('Owner writes through message → task → ACP → repo → card; dedup and n
   await t.gateway.message(t.msg('m1','edit'));await t.wait('COMPLETED');expect(await readFile(join(t.repo,'fake-created.txt'),'utf8')).toBe('changed');
   await t.gateway.message(t.msg('m1','edit'));expect(t.store.db.prepare('SELECT COUNT(*) n FROM tasks').get()).toEqual({n:1});
   expect(JSON.stringify(t.sent)).toContain('COMPLETED');expect(JSON.stringify(t.sent)).not.toContain('HIDDEN_THOUGHT');
+});
+it('unbound group auto-creates only for Owner tasks, binds and completes without setup commands',async()=>{
+  const t=await setup();await t.gateway.message(t.msg('auto-denied','hello','ou_member',true));
+  expect(t.store.binding('group')).toBeUndefined();expect(t.store.db.prepare('SELECT count(*) n FROM managed_repos').get()).toEqual({n:0});
+  await t.gateway.message(t.msg('auto-first','hello','ou_owner',true));await t.wait('COMPLETED');
+  const bound=t.store.binding('group')!;expect(bound.repo_id).toMatch(/^auto-group-/);
+  expect((await execa('git',['-C',t.registry.get(bound.repo_id).path,'rev-parse','HEAD'])).stdout).toMatch(/^[a-f0-9]{40}$/);
+  await t.gateway.message(t.msg('auto-second','again','ou_owner',true));await t.wait('COMPLETED');
+  expect(t.store.db.prepare('SELECT count(*) n FROM managed_repos').get()).toEqual({n:1});
+  expect(t.store.db.prepare('SELECT count(*) n FROM conversations').get()).toEqual({n:1});
+  expect(t.sent.filter(x=>x.to==='group').every(x=>(x.opts as {replyInThread:boolean}).replyInThread===false)).toBe(true);
+});
+it('ordinary group replies stay outside topics and consecutive messages reuse sender context',async()=>{
+  const t=await setup({groupConversationScope:'sender'});await t.gateway.message(t.msg('plain-bind','/repo bind test','ou_owner',true));
+  await t.gateway.message({...t.msg('plain1','hello1','ou_owner',true),rootId:undefined});await t.wait('COMPLETED');
+  await t.gateway.message({...t.msg('plain2','hello2','ou_owner',true),rootId:'another-thread'});await t.wait('COMPLETED');
+  const rows=t.store.db.prepare('SELECT conversation_id FROM tasks').all() as {conversation_id:string}[];
+  expect(rows).toHaveLength(2);expect(rows[0].conversation_id).toBe(rows[1].conversation_id);
+  const messages=t.sent.filter(x=>x.to==='group');
+  expect(messages.length).toBeGreaterThan(2);
+  for(const message of messages)expect(message.opts).toMatchObject({replyInThread:false});
+  await t.gateway.message(t.msg('member-status','/status','ou_member',true));
+  const count=t.store.db.prepare('SELECT count(*) n FROM conversations').get();expect(count).toEqual({n:2});
+  await t.gateway.message(t.msg('member-new','/new','ou_member',true));
+  expect(t.store.db.prepare("SELECT count(*) n FROM conversations WHERE active=1").get()).toEqual({n:1});
+});
+it('supports explicit shared ordinary context and retains optional thread isolation',async()=>{
+  const shared=await setup({groupConversationScope:'chat'});
+  shared.store.bind('group','test','fake','ou_owner');
+  await shared.gateway.message(shared.msg('shared1','/status','ou_owner',true));
+  await shared.gateway.message(shared.msg('shared2','/status','ou_member',true));
+  expect(shared.store.db.prepare('SELECT count(*) n FROM conversations').get()).toEqual({n:1});
+  await shared.gateway.message(shared.msg('shared-reset','/new','ou_member',true));
+  expect(shared.store.db.prepare('SELECT count(*) n FROM conversations WHERE active=1').get()).toEqual({n:1});
+  const thread=await setup({groupReplyMode:'thread'});thread.store.bind('group','test','fake','ou_owner');
+  await thread.gateway.message({...thread.msg('thread1','/status','ou_owner',true),rootId:'t1'});
+  await thread.gateway.message({...thread.msg('thread2','/status','ou_owner',true),rootId:'t2'});
+  expect(thread.store.db.prepare('SELECT count(*) n FROM conversations').get()).toEqual({n:2});
+  expect(thread.sent.every(x=>(x.opts as {replyInThread:boolean}).replyInThread)).toBe(true);
 });
 it('group binding requires Owner, security gate rejects members, dirty changes excluded from snapshot',async()=>{
   const t=await setup();await t.gateway.message(t.msg('b1','/repo bind test','ou_member',true));expect(t.store.binding('group')).toBeUndefined();

@@ -38,7 +38,7 @@ export class TaskManager{
     if(this.closing)throw new Error('Gateway is stopping');
     const id=nanoid();
     this.store.db.prepare('INSERT INTO tasks(id,conversation_id,requester_id,input_message_id,input_text,chat_type,status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(id,conv.id,msg.senderId,msg.messageId,redact(msg.content),msg.chatType,'RECEIVED',Date.now());
-    const presenter=new TaskPresenter(this.channel,msg.chatId,replyOptions(msg),{taskId:id,repo:conv.repo_id,agent:conv.agent_name,mode:profile==='group-read'?'READ':'WRITE',status:'RECEIVED',current:'任务排队中',text:'',files:new Set()},msg.chatType==='group');
+    const presenter=new TaskPresenter(this.channel,msg.chatId,replyOptions(msg,this.config.feishu.groupReplyMode),{taskId:id,repo:conv.repo_id,agent:conv.agent_name,mode:profile==='group-read'?'READ':'WRITE',status:'RECEIVED',current:'任务排队中',text:'',files:new Set()},msg.chatType==='group');
     this.live.set(id,{presenter,cancelled:false});
     const work=this.conversationsLock.run(conv.id,async()=>{
       const execute=()=>this.semaphore.run(()=>this.execute(id,msg,profile));
@@ -97,6 +97,7 @@ export class TaskManager{
         if(profile==='group-read'||msg.chatType==='p2p')this.conversations.append(conv.id,redact(msg.content),redact(live.presenter.state.text));
       }
       session.lastActive=Date.now();
+      this.store.db.prepare('UPDATE conversations SET last_active_at=? WHERE id=?').run(Date.now(),conv.id);
     }catch(e){
       this.approvals.cancelTask(id);
       const status=live.cancelled?'CANCELLED':'FAILED';
