@@ -34,9 +34,12 @@ if(config.agents.codex?.groupRead){
 const channel=connectChannel();const conversations=new ConversationManager(store);
 const tasks=new TaskManager(config,store,owner,views,conversations,channel,stateDir,audit);
 const gateway=new Gateway(config,store,owner,repos,tasks,channel,groupSafe);
-channel.on('message',async msg=>{try{await gateway.message(msg)}catch(e){audit.error({chatId:msg.chatId,errorType:e instanceof Error?e.name:'Error'},'message failure');await channel.send(msg.chatId,{markdown:redact('无法处理：'+(e instanceof Error?e.message:'内部错误'))},{replyTo:msg.messageId,replyInThread:msg.chatType==='group'})}});
+channel.on('message',async msg=>{audit.info({messageId:msg.messageId,chatId:msg.chatId,chatType:msg.chatType},'message received');try{await gateway.message(msg)}catch(e){audit.error({chatId:msg.chatId,errorType:e instanceof Error?e.name:'Error'},'message failure');await channel.send(msg.chatId,{markdown:redact('无法处理：'+(e instanceof Error?e.message:'内部错误'))},{replyTo:msg.messageId,replyInThread:msg.chatType==='group'})}});
 channel.on('cardAction',event=>gateway.cardAction(event));
 channel.on('error',()=>audit.error('channel error'));
+channel.on('reject',event=>audit.info({messageId:event.messageId,reason:event.reason},'channel policy rejected'));
+channel.on('reconnecting',()=>audit.warn('channel reconnecting'));
+channel.on('reconnected',()=>audit.info('channel reconnected'));
 let stopping=false;
 async function shutdown(){if(stopping)return;stopping=true;await channel.disconnect();await tasks.close();db.close();unlinkSync(lock);process.exitCode=0}
 process.once('SIGINT',()=>void shutdown());process.once('SIGTERM',()=>void shutdown());

@@ -60,6 +60,17 @@ npm run doctor -- --connect
 npm run dev
 ```
 
+Windows 需要关闭终端后仍接收消息时，使用独立后台进程（先 build）：
+
+```powershell
+npm run build
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-background.ps1
+Get-Content .state/logs/service.stdout.log -Tail 15
+```
+
+后台日志包含启动连接结果和首次 Owner 认领码。前台 dev/start 仅在进程仍运行时接收消息。
+不依赖 Codex 聊天回合中的临时工具会话维持服务。
+
 Doctor 真实检查 ACP initialize、认证/会话创建、Feishu WebSocket（--connect），
 以及 Group Read 外部文件、写入、网络和密钥探针。关键项失败返回非零；
 群隔离失败时 Owner 仍可启动，群成员不会运行 Agent。
