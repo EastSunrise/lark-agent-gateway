@@ -14,7 +14,7 @@ export const configSchema = z.object({
     defaultAgent:z.string().default('codex'),
     groupScope:z.enum(['group','shared']).default('group'),
   }).default({enabled:true,defaultAgent:'codex',groupScope:'group'}),
-  agents: z.record(z.string().regex(/^[a-zA-Z0-9_-]+$/), z.object({ enabled: z.boolean().default(true), command: z.string().default('codex-acp'), args: z.array(z.string()).default([]), groupRead: z.boolean().default(false) })).default({codex:{enabled:true,command:'codex-acp',args:[],groupRead:true}}),
+  agents: z.record(z.string().regex(/^[a-zA-Z0-9_-]+$/), z.object({ enabled: z.boolean().default(true), command: z.string().default('codex-acp'), args: z.array(z.string()).default([]), groupRead: z.boolean().default(false) })).default({codex:{enabled:true,command:'codex-acp',args:[],groupRead:false}}),
   repos: z.record(z.string().regex(/^[a-zA-Z0-9_-]+$/), z.object({path:z.string().min(1),defaultAgent:z.string().default('codex')})).default({}),
   security: z.object({groupRead:z.object({network:z.literal(false).default(false),deny:z.array(z.string()).default(defaultDeny)}).default({network:false,deny:defaultDeny})}).default({groupRead:{network:false,deny:defaultDeny}}),
   worktrees:z.object({retentionDays:z.number().positive().default(7)}).default({retentionDays:7}),

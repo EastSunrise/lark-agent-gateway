@@ -31,11 +31,17 @@ if(repo){
     await check('Codex authentication / workspace-write session',()=>client.open(view.cwd,'owner-write'));
   }finally{await client.close()}
 }else{failed=true;console.log('FAIL No registered Git Repo')}
+if(config.agents.codex?.enabled&&config.agents.codex.groupRead){
 const report=await securityProbe(config,stateDir);
 writeFileSync(join(stateDir,'security-report.json'),JSON.stringify(report,null,2),{mode:0o600});
 console.log((report.passed?'PASS':'FAIL')+' Group Read Security Probe · '+report.reason);
 for(const [name,pass] of Object.entries(report.checks))console.log((pass?'PASS':'FAIL')+' '+name);
 if(!report.passed)failed=true;
+}else{
+  const report={passed:false,skipped:true,checks:{},reason:'Group Read disabled by configuration',checkedAt:new Date().toISOString()};
+  writeFileSync(join(stateDir,'security-report.json'),JSON.stringify(report,null,2),{mode:0o600});
+  console.log('SKIP Group Read Security Probe · feature disabled');
+}
 if(process.argv.includes('--connect')){
   await check('Feishu WebSocket handshake',async()=>{const channel=connectChannel();try{await timeout(channel.connect(),20000,'Feishu connect');return 'connected'}finally{await channel.disconnect()}});
 }

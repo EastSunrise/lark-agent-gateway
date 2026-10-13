@@ -6,7 +6,7 @@ Codex App Server → 本机 Git Repo → 飞书任务卡片。
 已实现 Owner 私聊/群聊写任务、仓库选择和绑定、群默认自动建仓库、持久会话、任务排队、Repo 写锁、
 公开摘要恢复、审批一次、拒绝/超时、取消、去重、Streaming 卡片、审计和 Doctor。
 群成员任务的 native readable-root 隔离必须通过安全验证。
-**当前固定 codex-acp 2.2.2 的受限会话/探针未通过，Group Read 默认禁用。**
+**群成员只读功能暂缓实现，Group Read 默认关闭。当前支持 Owner 私聊和群聊任务。**
 不能将 Owner 闭环成功等同于全部验收通过。详见
 [安全限制 ADR](docs/adr/0002-group-read-runtime-gate.md) 和 [实施规格](docs/implementation-spec.md)。
 
@@ -40,7 +40,7 @@ agents:
   codex:
     enabled: true
     command: codex-acp
-    groupRead: true
+    groupRead: false
 repos:
   gateway:
     path: D:/Projects/lark-agent-gateway
@@ -80,7 +80,7 @@ Get-Content .state/logs/service.stdout.log -Tail 15
 不依赖 Codex 聊天回合中的临时工具会话维持服务。
 
 Doctor 真实检查 ACP initialize、认证/会话创建、Feishu WebSocket（--connect），
-以及 Group Read 外部文件、写入、网络和密钥探针。关键项失败返回非零；
+启用 Group Read 后还会检查外部文件、写入、网络和密钥探针；关闭时标记 SKIP，不算验证通过。关键项失败返回非零；
 群隔离失败时 Owner 仍可启动，群成员不会运行 Agent。
 
 终端打印一次性 10 分钟 Owner claim code，在机器人私聊发送：

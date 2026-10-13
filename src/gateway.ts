@@ -71,7 +71,7 @@ export class Gateway{
     }
     if(cmd){await reply('未知命令。\n'+help);return}
     const mode=policy({owner,dm,mentioned:msg.mentionedBot,mentionAll:msg.mentionAll,bound:!!binding,groupSafe:this.groupSafe&&agent==='codex'&&this.config.agents[agent].groupRead});
-    if(mode==='UNSAFE'){await reply('Group Read 安全验证未通过，群成员任务已禁用。Owner 仍可使用。');return}
+    if(mode==='UNSAFE'){await reply('群成员只读功能暂未启用，当前仅 Owner 可使用。');return}
     if(mode==='group-read'||mode==='owner-write')this.tasks.submit(msg,conv,mode);
   }
   async cardAction(event:CardActionEvent){
