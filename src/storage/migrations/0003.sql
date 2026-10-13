@@ -1,0 +1,10 @@
+ALTER TABLE tasks ADD COLUMN result_text TEXT;
+ALTER TABLE tasks ADD COLUMN result_card_json TEXT;
+ALTER TABLE tasks ADD COLUMN reply_options_json TEXT;
+ALTER TABLE tasks ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'PENDING';
+ALTER TABLE tasks ADD COLUMN delivery_error TEXT;
+ALTER TABLE tasks ADD COLUMN delivery_message_id TEXT;
+CREATE TABLE conversation_summaries(conversation_id TEXT NOT NULL REFERENCES conversations(id),profile TEXT NOT NULL,summary TEXT NOT NULL,PRIMARY KEY(conversation_id,profile));
+INSERT INTO conversation_summaries SELECT id,CASE WHEN thread_key IS NULL THEN 'owner-write' ELSE 'group-read' END,summary FROM conversations WHERE summary<>'';
+CREATE TABLE repo_creations(repo_id TEXT PRIMARY KEY,scope_type TEXT NOT NULL,scope_key TEXT NOT NULL,path TEXT NOT NULL,staging_path TEXT NOT NULL,root TEXT NOT NULL,token TEXT NOT NULL,default_agent TEXT NOT NULL,status TEXT NOT NULL,created_at INTEGER NOT NULL,UNIQUE(scope_type,scope_key));
+INSERT INTO schema_migrations VALUES(3,unixepoch()*1000);

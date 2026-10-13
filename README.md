@@ -111,6 +111,7 @@ Doctor 真实检查 ACP initialize、认证/会话创建、Feishu WebSocket（--
 - /new：共享会话由 Owner 重置；每人独立模式允许成员重置自己的会话。
 - /status：当前 Conversation 最近任务状态。
 - /stop：取消自己的任务；Owner 可取消当前 Conversation 中所有任务。
+- /retry <taskId>：仅重发未送达的已完成任务结果；不会再次执行修改或命令。
 
 默认群聊回复直接显示在群消息流中，不创建话题；全群共用 chat + repo + agent 上下文。
 可配置 groupConversationScope: sender 让每个人各用独立上下文；
@@ -127,7 +128,14 @@ Gateway 不提供 filesystem/terminal ACP client 执行能力，所有执行由 
 
 重启时 RECEIVED/RUNNING/WAITING_APPROVAL 标记 INTERRUPTED，pending approvals 过期。
 下次输入在相同 profile 尝试 ACP load；不支持/失败则用公开摘要新建 Session。
+READ、WRITE 摘要分别保存，Owner 群聊 WRITE 也可恢复；WRITE 历史不会进入 READ。
+执行完成先持久化脱敏结果和摘要，再发送最终卡片。回复失败保留 COMPLETED 执行状态，
+单独记录 delivery_status=FAILED；/status 提示 /retry，可更新原卡片重发结果。
 不会声称旧 shell 仍运行。空闲 Session 30 分钟退出；过期 worktree 无 active 引用后回收。
+
+自动建仓库使用 SQLite 创建记录及私有 .git 标记验证目标归属。
+仓库已落盘但注册写入失败时，下次请求或重启会补全注册，保留仓库中的用户修改；
+遇到无法验证归属的已有目录会拒绝覆盖。SQLite 迁移按版本只执行一次。
 
 ## 手工创建飞书机器人
 

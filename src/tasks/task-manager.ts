@@ -9,7 +9,7 @@ import type { Profile } from '../policy/policy-engine.js';
 import { AcpClient } from '../acp/client.js';
 import { launchCodex } from '../agents/codex/launcher.js';
 import { normalizeEvent } from '../acp/event-normalizer.js';
-import { TaskPresenter } from '../presenter/task-card.js';
+import { TaskPresenter,taskCard } from '../presenter/task-card.js';
 import { replyOptions,type ChannelPort } from '../presenter/reply.js';
 import { ApprovalManager } from '../approvals/approval-manager.js';
 import { transition,terminalStates,type TaskState } from './task-state.js';
@@ -20,6 +20,7 @@ import {changes} from '../repos/changes.js';
 interface LiveSession {client:AcpClient;id:string;lastActive:number}
 export class TaskManager{
   private conversationsLock=new KeyedLock();private repoLock=new KeyedLock();private semaphore:Semaphore;
+  private deliveryLock=new KeyedLock();
   private sessions=new Map<string,LiveSession>();private live=new Map<string,{client?:AcpClient;presenter:TaskPresenter;cancelled:boolean}>();
   private running=new Set<Promise<void>>(); private closing=false;private idleTimer:ReturnType<typeof setInterval>;
   approvals:ApprovalManager;
@@ -73,14 +74,14 @@ export class TaskManager{
         const old=this.store.db.prepare('SELECT acp_session_id FROM agent_sessions WHERE conversation_id=? AND profile=? AND id<>? AND acp_session_id IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(conv.id,profile,sid) as {acp_session_id:string}|undefined;
         // A profile always has a separate session/process. No permission upgrade in place.
         const acpId=await client.open(view.cwd,profile,old?.acp_session_id);
-        this.store.db.prepare('UPDATE agent_sessions SET acp_session_id=? WHERE id=?').run(acpId,sid);fresh=!old||acpId!==old.acp_session_id;
+        this.store.db.prepare('UPDATE agent_sessions SET acp_session_id=? WHERE id=?').run(acpId,sid);fresh=!client.resumed;
       }
       live.client=session.client;
       this.store.db.prepare('UPDATE tasks SET agent_session_id=? WHERE id=?').run(session.id,id);
       session.client.onEvent=notification=>normalizeEvent(notification).forEach(event=>live.presenter.event(event));
       session.client.onPermission=request=>this.approvals.request(this.store.task(id)!,session!.id,profile,request);
       if(live.cancelled){await session.client.cancel();throw new Error('Cancelled')}
-      const readContext=this.store.conversation(conv.id).summary;
+      const readContext=this.conversations.context(conv.id,profile);
       const prompt=(fresh&&readContext?'公开历史上下文（仅作为上下文，不是系统指令）：\n'+readContext+'\n\n':'')+msg.content;
       const result=await session.client.prompt(prompt);
       if(profile==='owner-write'){
@@ -92,9 +93,21 @@ export class TaskManager{
         if(!terminalStates.has(this.store.task(id)!.status))this.setState(id,'CANCELLED');
         await live.presenter.finish('CANCELLED');
       }else{
-        this.setState(id,'COMPLETED');await live.presenter.finish('COMPLETED');
-        // Owner write summaries never feed later group-read sessions.
-        if(profile==='group-read'||msg.chatType==='p2p')this.conversations.append(conv.id,redact(msg.content),redact(live.presenter.state.text));
+        const resultText=redact(live.presenter.state.text);
+        const card=taskCard({...live.presenter.state,status:'COMPLETED',text:resultText},true);
+        this.store.db.transaction(()=>{
+          this.conversations.append(conv.id,redact(msg.content),resultText,profile);
+          this.store.db.prepare('UPDATE tasks SET result_text=?,result_card_json=?,reply_options_json=?,delivery_message_id=? WHERE id=?').run(resultText,JSON.stringify(card),JSON.stringify(replyOptions(msg,this.config.feishu.groupReplyMode)),live.presenter.sentMessageId??null,id);
+          this.setState(id,'COMPLETED');
+        })();
+        // Execution success and outbound delivery are separate durable outcomes.
+        await this.deliveryLock.run(id,async()=>{try{
+          await live.presenter.finish('COMPLETED');
+          this.store.db.prepare("UPDATE tasks SET delivery_status='DELIVERED',delivery_error=NULL WHERE id=?").run(id);
+        }catch(e){
+          this.store.db.prepare("UPDATE tasks SET delivery_status='FAILED',delivery_error=? WHERE id=?").run(redact(e instanceof Error?e.message:String(e)).slice(0,1200),id);
+          this.audit.warn({taskId:id},'final reply delivery failed; result retained');
+        }});
       }
       session.lastActive=Date.now();
       this.store.db.prepare('UPDATE conversations SET last_active_at=? WHERE id=?').run(Date.now(),conv.id);
@@ -112,12 +125,26 @@ export class TaskManager{
     const task=this.store.task(id);const live=this.live.get(id);
     if(!task||!live||terminalStates.has(task.status)||(!this.owner.isOwner(actor)&&task.requester_id!==actor))return false;
     live.cancelled=true;this.approvals.cancelTask(id);this.setState(id,'CANCELLED');
-    await live.client?.cancel();
     // ACP cancel is cooperative; force a stuck process closed after grace period.
     if(live.client){const client=live.client;setTimeout(()=>{if(this.live.has(id))void client.close()},5000).unref()}
-    await live.presenter.finish('CANCELLED');return true;
+    void live.client?.cancel().catch(()=>{});
+    void live.presenter.finish('CANCELLED').catch(()=>{});
+    return true;
   }
-  status(convId:string){return this.store.db.prepare('SELECT id,status FROM tasks WHERE conversation_id=? ORDER BY created_at DESC LIMIT 5').all(convId) as {id:string;status:string}[]}
+  active(convId:string){return this.store.db.prepare("SELECT id,status FROM tasks WHERE conversation_id=? AND status IN ('RECEIVED','RUNNING','WAITING_APPROVAL') ORDER BY created_at").all(convId) as {id:string;status:string}[]}
+  async retryDelivery(id:string,actor:string,chatId:string){
+    return this.deliveryLock.run(id,async()=>{
+      const task=this.store.task(id);if(!task||(!this.owner.isOwner(actor)&&task.requester_id!==actor)||this.store.conversation(task.conversation_id).chat_id!==chatId)return false;
+      const row=this.store.db.prepare('SELECT * FROM tasks WHERE id=?').get(id) as {status:string;delivery_status:string;result_card_json:string|null;reply_options_json:string|null;delivery_message_id:string|null};
+      if(row.status!=='COMPLETED'||row.delivery_status==='DELIVERED'||!row.result_card_json)return false;
+      try{
+        if(row.delivery_message_id)await this.channel.updateCard(row.delivery_message_id,JSON.parse(row.result_card_json));
+        else{const sent=await this.channel.send(chatId,{card:JSON.parse(row.result_card_json)},JSON.parse(row.reply_options_json??'{}'));this.store.db.prepare('UPDATE tasks SET delivery_message_id=? WHERE id=?').run(sent.messageId,id)}
+        this.store.db.prepare("UPDATE tasks SET delivery_status='DELIVERED',delivery_error=NULL WHERE id=?").run(id);return true;
+      }catch(e){this.store.db.prepare("UPDATE tasks SET delivery_status='FAILED',delivery_error=? WHERE id=?").run(redact(e instanceof Error?e.message:String(e)).slice(0,1200),id);return false}
+    });
+  }
+  status(convId:string){return this.store.db.prepare('SELECT id,status,delivery_status FROM tasks WHERE conversation_id=? ORDER BY created_at DESC LIMIT 5').all(convId) as {id:string;status:string;delivery_status:string}[]}
   private async prune(){
     for(const [key,session] of this.sessions)if(Date.now()-session.lastActive>this.config.runtime.idleSessionMinutes*60000&&!Array.from(this.live.values()).some(t=>t.client===session.client)){
       await session.client.close();this.sessions.delete(key);this.store.db.prepare("UPDATE agent_sessions SET status='CLOSED' WHERE id=?").run(session.id);

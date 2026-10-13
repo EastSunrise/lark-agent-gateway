@@ -8,7 +8,7 @@ export function timeout<T>(promise:Promise<T>,ms:number,label:string):Promise<T>
 }
 export class AcpClient {
   private child; private connection:ClientSideConnection;
-  info?:InitializeResponse; sessionId?:string;
+  info?:InitializeResponse; sessionId?:string; resumed=false;
   onEvent:(event:SessionNotification)=>void=()=>{};
   onPermission:(request:RequestPermissionRequest)=>Promise<RequestPermissionResponse>=async()=>({outcome:{outcome:'cancelled'}});
   private broken?:Error; private closing=false;
@@ -27,10 +27,16 @@ export class AcpClient {
     validateCapabilities(this.info);return this.info;
   }
   async open(cwd:string,profile:string,previous?:string){
+    this.resumed=false;
     if(!this.info)await this.initialize();
     if(previous&&this.info?.agentCapabilities?.loadSession){
       this.sessionId=previous;
-      try{await timeout(this.connection.loadSession({sessionId:previous,cwd,mcpServers:[]}),30000,'ACP load');return previous}catch{this.sessionId=undefined}
+      try{
+        const loaded=await timeout(this.connection.loadSession({sessionId:previous,cwd,mcpServers:[]}),30000,'ACP load');
+        const mode=profile==='group-read'?'read-only':'workspace-write';
+        if(loaded.modes?.currentModeId!==mode)throw new Error('Loaded Agent mode differs from required profile');
+        this.resumed=true;return previous;
+      }catch{this.sessionId=undefined}
     }
     const result=await timeout(this.connection.newSession({cwd,mcpServers:[]}),30000,'ACP session/new');
     this.sessionId=result.sessionId;

@@ -26,6 +26,7 @@ export class Gateway{
     if(dm&&!owner){await reply('仅 Owner 可以私聊使用。');return}
     let binding=this.store.binding(msg.chatId);
     if(cmd?.name==='/help'){await reply(help);return}
+    if(cmd?.name==='/retry'){await reply(await this.tasks.retryDelivery(cmd.args[0]??'',msg.senderId,msg.chatId)?'结果已重新发送，未重新执行任务。':'无法重发：没有权限、结果已送达或任务尚无结果。');return}
     if(cmd?.name==='/repo'&&cmd.args[0]==='list'){
       if(!owner&&!binding){await reply('该群尚未绑定项目。请 Owner 使用 /repo bind <repo>');return}
       await reply((owner?this.repos.list().map(r=>r.id):[binding!.repo_id]).join('\n'));return;
@@ -63,9 +64,9 @@ export class Gateway{
       if(!owner&&(this.config.feishu.groupReplyMode==='thread'||this.config.feishu.groupConversationScope==='chat')){await reply('仅 Owner 可以重置共享会话。');return}
       this.conversations.reset(conv.id);await reply('新会话已准备；下一条消息将获取最新 HEAD。');return;
     }
-    if(cmd?.name==='/status'){await reply(this.tasks.status(conv.id).map(x=>x.id+' '+x.status).join('\n')||'当前无任务');return}
+    if(cmd?.name==='/status'){await reply(this.tasks.status(conv.id).map(x=>x.id+' '+x.status+(x.status==='COMPLETED'&&x.delivery_status==='FAILED'?' · 回复未送达，可 /retry '+x.id:'')).join('\n')||'当前无任务');return}
     if(cmd?.name==='/stop'){
-      const ids=this.tasks.status(conv.id);let stopped=0;for(const task of ids)if(await this.tasks.cancel(task.id,msg.senderId))stopped++;
+      const ids=this.tasks.active(conv.id);let stopped=0;for(const task of ids)if(await this.tasks.cancel(task.id,msg.senderId))stopped++;
       await reply(stopped?'已取消 '+stopped+' 个任务。':'没有可取消的任务。');return;
     }
     if(cmd){await reply('未知命令。\n'+help);return}

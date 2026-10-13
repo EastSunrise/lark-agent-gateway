@@ -2,12 +2,12 @@ import {AgentSideConnection,ndJsonStream,PROTOCOL_VERSION,RequestError} from '@a
 import {Readable,Writable} from 'node:stream';
 import {writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-let cancelled=false;let cwd;const mode=process.env.INITIAL_AGENT_MODE??'workspace-write';
+let cancelled=false;let cwd;let sequence=0;const mode=process.env.INITIAL_AGENT_MODE??'workspace-write';
 const conn=new AgentSideConnection(connection=>({
-  initialize:async()=>({protocolVersion:PROTOCOL_VERSION,agentCapabilities:{loadSession:true},agentInfo:{name:'fake',version:'1'}}),
+  initialize:async()=>({protocolVersion:PROTOCOL_VERSION,agentCapabilities:{loadSession:!process.argv.includes('--no-load')},agentInfo:{name:'fake',version:'1'}}),
   authenticate:async()=>({}),
-  newSession:async p=>{cwd=p.cwd;return {sessionId:'fake-'+Date.now(),modes:{currentModeId:mode,availableModes:[{id:mode,name:mode}]}}},
-  loadSession:async p=>{cwd=p.cwd;return {modes:{currentModeId:mode,availableModes:[{id:mode,name:mode}]}}},
+  newSession:async p=>{cwd=p.cwd;return {sessionId:'fake-'+(++sequence),modes:{currentModeId:mode,availableModes:[{id:mode,name:mode}]}}},
+  loadSession:async p=>{cwd=p.cwd;return {modes:{currentModeId:process.argv.includes('--bad-load-mode')?'agent-full-access':mode,availableModes:[{id:mode,name:mode}]}}},
   cancel:async()=>{cancelled=true},
   prompt:async p=>{
     cancelled=false;const text=p.prompt.map(x=>x.text??'').join('');

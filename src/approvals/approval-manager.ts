@@ -10,7 +10,7 @@ export class ApprovalManager{
   private waiting=new Map<string,{resolve:(r:RequestPermissionResponse)=>void;request:RequestPermissionRequest;timer:ReturnType<typeof setTimeout>;taskId:string}>();
   constructor(private store:Store,private owner:OwnerService,private channel:ChannelPort,private onState:(taskId:string,state:'WAITING_APPROVAL'|'RUNNING')=>void,private ttlMs=600000){}
   async request(task:Task,sessionId:string,profile:string,request:RequestPermissionRequest){
-    if(profile!=='owner-write'||!this.owner.isOwner(task.requester_id))return cancelled;
+    if(profile!=='owner-write'||!this.owner.isOwner(task.requester_id)||!['RUNNING','WAITING_APPROVAL'].includes(task.status))return cancelled;
     const allow=request.options.find(x=>x.kind==='allow_once');if(!allow)return cancelled;
     const id=nanoid();const now=Date.now();
     // Only the public permission subject/reason is retained. No raw tool payload/source.
@@ -42,8 +42,8 @@ export class ApprovalManager{
     if(!changed)return false;
     clearTimeout(pending.timer);this.waiting.delete(id);
     const option=status==='APPROVED'?pending.request.options.find(x=>x.kind==='allow_once'):pending.request.options.find(x=>x.kind==='reject_once');
-    pending.resolve(option?{outcome:{outcome:'selected',optionId:option.optionId}}:cancelled);
-    this.onState(pending.taskId,'RUNNING');
+    pending.resolve(status==='CANCELLED'?cancelled:option?{outcome:{outcome:'selected',optionId:option.optionId}}:cancelled);
+    if(status!=='CANCELLED')this.onState(pending.taskId,'RUNNING');
     const p=JSON.parse(row.payload_json);const conv=this.store.conversation(this.store.task(row.task_id)!.conversation_id);
     if(row.card_message_id)void this.channel.updateCard(row.card_message_id,approvalCard(id,conv.repo_id,p.subject,p.reason,status)).catch(()=>{});
     return true;

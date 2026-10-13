@@ -10,7 +10,11 @@ export function openDatabase(stateDir:string) {
   const local = new URL('./migrations/',import.meta.url);
   const source = new URL('../../../src/storage/migrations/',import.meta.url);
   const dir=existsSync(local)?local:source;
-  for(const file of readdirSync(dir).filter(f=>/^\d+\.sql$/.test(f)).sort())db.exec(readFileSync(new URL(file,dir),'utf8'));
+  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL)');
+  for(const file of readdirSync(dir).filter(f=>/^\d+\.sql$/.test(f)).sort()){
+    const version=Number(file.split('.')[0]);
+    if(!db.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version))db.transaction(()=>db.exec(readFileSync(new URL(file,dir),'utf8')))();
+  }
   protectPath(join(stateDir,'state.db'),false);
   return db;
 }

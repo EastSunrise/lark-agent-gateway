@@ -5,7 +5,9 @@
 | 项目 | 状态 |
 |---|---|
 | TypeScript typecheck/build | 通过 |
-| Fake ACP 与控制面测试 | 通过（见 npm test） |
+| Fake ACP 与控制面测试 | 36 项通过（见 npm test） |
+| 六项评审问题回归 | 通过，含长私钥、完整取消、WRITE 恢复、交付重试、ACP 取消、建仓库故障恢复 |
+| SQLite v2 → v3 迁移与重复启动 | 通过，保留历史数据，按版本只迁移一次 |
 | 真实 Codex initialize / Owner 写 Session | 通过 |
 | 真实 Codex 读 README、创建文件、运行验证 | 通过（RUN_CODEX_E2E=1） |
 | 飞书凭证 / WebSocket handshake | 通过 |

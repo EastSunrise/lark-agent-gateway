@@ -7,12 +7,13 @@ export function taskCard(s:CardState,group:boolean){
   const safe=(text:string)=>group?redact(text):text;
   return {config:{wide_screen_mode:true},header:{template:s.status==='COMPLETED'?'green':s.status==='FAILED'?'red':'blue',title:{tag:'plain_text',content:'🤖 Agent Task · '+s.status}},
     elements:[{tag:'markdown',content:safe('**Repo** '+s.repo+'  ·  **Agent** '+s.agent+'  ·  **Mode** '+s.mode+'\n**Current** '+s.current+'\n**Files** '+s.files.size+'\n'+[...s.files].join('\n'))},
-      {tag:'markdown',content:safe(s.text.slice(-18000)||'等待 Agent...')},
+      {tag:'markdown',content:safe(s.text).slice(-18000)||'等待 Agent...'},
       ...(['RECEIVED','RUNNING','WAITING_APPROVAL'].includes(s.status)?[{tag:'action',actions:[{tag:'button',text:{tag:'plain_text',content:'取消'},value:{kind:'cancel',taskId:s.taskId}}]}]:[])]};
 }
 export class TaskPresenter {
   private messageId?:string;private timer?:ReturnType<typeof setTimeout>;private pending=Promise.resolve();private last=0;
   private controller?:CardStreamController;private endStream?:()=>void;private streaming?:Promise<SendResult>;
+  get sentMessageId(){return this.messageId}
   constructor(private channel:ChannelPort,private chat:string,private opts:SendOptions,public state:CardState,private group:boolean){}
   async start(){
     if(!this.channel.stream){this.messageId=(await this.channel.send(this.chat,{card:taskCard(this.state,this.group)},this.opts)).messageId;return}
@@ -37,5 +38,5 @@ export class TaskPresenter {
     this.pending=this.pending.catch(()=>{}).then(async()=>{if(this.messageId){if(this.controller)await this.controller.update(taskCard(this.state,this.group));else await this.channel.updateCard(this.messageId,taskCard(this.state,this.group));this.last=Date.now()}});
     return this.pending;
   }
-  async finish(status:string,error?:string){if(this.timer)clearTimeout(this.timer);this.timer=undefined;this.state.status=status;if(error)this.state.text='任务结束：'+error;try{await this.flush()}finally{this.endStream?.();await this.streaming?.catch(()=>{})}}
+  async finish(status:string,error?:string){if(this.timer)clearTimeout(this.timer);this.timer=undefined;this.state.status=status;if(error)this.state.text='任务结束：'+error;try{await this.flush()}finally{this.endStream?.();await this.streaming}}
 }

@@ -34,3 +34,24 @@ it('never allows scope strings to become filesystem paths and keeps DM independe
 it('optional shared default maps different groups to the same Repo',async()=>{
   const t=await setup('shared');expect((await t.service.ensure('oc_a',false)).id).toBe((await t.service.ensure('oc_b',false)).id);
 });
+it('recovers a published Repo after database registration failure and preserves user edits across restart',async()=>{
+  const t=await setup();
+  t.store.db.exec("CREATE TRIGGER fail_registration BEFORE INSERT ON managed_repos BEGIN SELECT RAISE(ABORT,'REGISTRATION_FAILED'); END");
+  await expect(t.service.ensure('oc_recover',false)).rejects.toThrow(/REGISTRATION_FAILED/);
+  const pending=t.store.db.prepare('SELECT * FROM repo_creations').get() as {path:string;status:string};
+  expect(pending.status).toBe('PUBLISHED');
+  await writeFile(join(pending.path,'user-change.txt'),'keep this change');
+  t.store.db.exec('DROP TRIGGER fail_registration');
+  const registry=new RepoRegistry();await registry.initialize(t.config);
+  const recovered=new DefaultRepoService(t.config,t.store,registry,join(t.root,'state'));await recovered.initialize();
+  const repo=await recovered.ensure('oc_recover',false);
+  expect(repo.path).toBe(pending.path);expect(await readFile(join(repo.path,'user-change.txt'),'utf8')).toBe('keep this change');
+  expect(t.store.db.prepare('SELECT count(*) n FROM repo_creations').get()).toEqual({n:0});
+});
+it('retry in the same process completes failed registration without a false configured-Repo collision',async()=>{
+  const t=await setup();t.store.db.exec("CREATE TRIGGER fail_registration BEFORE INSERT ON managed_repos BEGIN SELECT RAISE(ABORT,'FAIL'); END");
+  await expect(t.service.ensure('oc_retry',false)).rejects.toThrow();
+  t.store.db.exec('DROP TRIGGER fail_registration');
+  expect((await t.service.ensure('oc_retry',false)).id).toMatch(/^auto-group-/);
+  expect(t.store.db.prepare('SELECT count(*) n FROM managed_repos').get()).toEqual({n:1});
+});

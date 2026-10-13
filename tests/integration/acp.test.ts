@@ -3,8 +3,8 @@ import {resolve} from 'node:path';
 import {AcpClient} from '../../src/acp/client.js';
 import {normalizeEvent} from '../../src/acp/event-normalizer.js';
 const clients:AcpClient[]=[];
-function client(mode='workspace-write'){
-  const c=new AcpClient({command:process.execPath,args:[resolve('tests/fixtures/fake-agent.mjs')],cwd:process.cwd(),env:{...process.env,INITIAL_AGENT_MODE:mode}});clients.push(c);return c;
+function client(mode='workspace-write',args:string[]=[]){
+  const c=new AcpClient({command:process.execPath,args:[resolve('tests/fixtures/fake-agent.mjs'),...args],cwd:process.cwd(),env:{...process.env,INITIAL_AGENT_MODE:mode}});clients.push(c);return c;
 }
 afterEach(async()=>{await Promise.all(clients.splice(0).map(c=>c.close()))});
 it('stable ACP initialize/new/prompt/stream/load',async()=>{
@@ -12,6 +12,11 @@ it('stable ACP initialize/new/prompt/stream/load',async()=>{
   const events:unknown[]=[];c.onEvent=e=>events.push(...normalizeEvent(e));await c.prompt('hello');
   expect(JSON.stringify(events)).toContain('answer:hello');expect(JSON.stringify(events)).not.toContain('HIDDEN_THOUGHT');
   expect(await c.open(process.cwd(),'owner-write',id)).toBe(id);
+});
+it('does not reuse a loaded Session with a higher mode than the launch profile',async()=>{
+  const c=client('read-only',['--bad-load-mode']);await c.initialize();
+  const id=await c.open(process.cwd(),'group-read');
+  expect(await c.open(process.cwd(),'group-read',id)).not.toBe(id);
 });
 it('permission request preserves allow-once and supports auto-deny',async()=>{
   const c=client();await c.open(process.cwd(),'owner-write');let permission=false;

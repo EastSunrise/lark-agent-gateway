@@ -17,11 +17,11 @@ import {ApprovalManager} from '../../src/approvals/approval-manager.js';
 import {DefaultRepoService} from '../../src/repos/default-repo-service.js';
 const cleanups:(()=>Promise<void>)[]=[];
 afterEach(async()=>{for(const fn of cleanups.splice(0))await fn()});
-async function setup(feishu:Record<string,unknown>={}){
+async function setup(feishu:Record<string,unknown>={},agentArgs:string[]=[]){
   await mkdir('.test-tmp',{recursive:true});const root=await mkdtemp(resolve('.test-tmp/gateway-'));const repo=join(root,'repo');await mkdir(repo);
   await execa('git',['init',repo]);await writeFile(join(repo,'README.md'),'committed');
   await execa('git',['-C',repo,'add','README.md']);await execa('git',['-C',repo,'-c','user.name=Test','-c','user.email=test@localhost','commit','-m','fixture']);
-  const config=configSchema.parse({feishu,repoDefaults:{defaultAgent:'fake'},repos:{test:{path:repo,defaultAgent:'fake'}},agents:{fake:{command:process.execPath,args:[resolve('tests/fixtures/fake-agent.mjs')],groupRead:false}}});
+  const config=configSchema.parse({feishu,repoDefaults:{defaultAgent:'fake'},repos:{test:{path:repo,defaultAgent:'fake'}},agents:{fake:{command:process.execPath,args:[resolve('tests/fixtures/fake-agent.mjs'),...agentArgs],groupRead:false}}});
   const db=openDatabase(join(root,'state'));const store=new Store(db);const owner=new OwnerService(db,'ou_owner');const registry=new RepoRegistry();await registry.initialize(config);
   const sent:{to:string;input:unknown;opts:unknown}[]=[];const channel={send:async(to:string,input:unknown,opts?:unknown)=>{sent.push({to,input,opts});return {messageId:'card'+sent.length}},updateCard:async(_id:string,card:object)=>{sent.push({to:'update',input:card,opts:{}})}};
   const views=new RepoViewManager(registry,join(root,'state'));const conversations=new ConversationManager(store);
@@ -31,13 +31,64 @@ async function setup(feishu:Record<string,unknown>={}){
   cleanups.push(async()=>{await tasks.close();db.close()});
   const msg=(id:string,text:string,sender='ou_owner',group=false):NormalizedMessage=>({messageId:id,chatId:group?'group':'dm',chatType:group?'group':'p2p',senderId:sender,content:text,rawContentType:'text',resources:[],mentions:[],mentionedBot:group,mentionAll:false,rootId:group?'thread':undefined,createTime:Date.now()});
   const wait=async(status:string)=>{for(let i=0;i<300;i++){const row=db.prepare('SELECT status FROM tasks ORDER BY created_at DESC LIMIT 1').get() as {status:string}|undefined;if(row?.status===status)return;await new Promise(r=>setTimeout(r,20))}throw new Error('Timed out waiting for '+status)};
-  return {repo,store,owner,registry,views,gateway,tasks,sent,msg,wait,conversations,channel};
+  return {repo,store,owner,registry,views,gateway,tasks,sent,msg,wait,conversations,channel,config,root};
 }
 it('Owner writes through message → task → ACP → repo → card; dedup and non-owner DM block',async()=>{
   const t=await setup();await t.gateway.message(t.msg('denied','edit','ou_member'));expect(t.store.db.prepare('SELECT COUNT(*) n FROM tasks').get()).toEqual({n:0});
   await t.gateway.message(t.msg('m1','edit'));await t.wait('COMPLETED');expect(await readFile(join(t.repo,'fake-created.txt'),'utf8')).toBe('changed');
   await t.gateway.message(t.msg('m1','edit'));expect(t.store.db.prepare('SELECT COUNT(*) n FROM tasks').get()).toEqual({n:1});
   expect(JSON.stringify(t.sent)).toContain('COMPLETED');expect(JSON.stringify(t.sent)).not.toContain('HIDDEN_THOUGHT');
+});
+it('/stop cancels running and all queued tasks even beyond the five displayed records',async()=>{
+  const t=await setup();t.store.bind('group','test','fake','ou_owner');
+  await t.gateway.message(t.msg('many0','wait','ou_owner',true));await t.wait('RUNNING');
+  for(let i=1;i<8;i++){await new Promise(r=>setTimeout(r,3));await t.gateway.message(t.msg('many'+i,'wait','ou_owner',true))}
+  await t.gateway.message(t.msg('stop-all','/stop','ou_owner',true));
+  const rows=t.store.db.prepare('SELECT status FROM tasks').all() as {status:string}[];
+  expect(rows).toHaveLength(8);expect(rows.every(x=>x.status==='CANCELLED')).toBe(true);
+});
+it('group WRITE fallback preserves its history without exposing it to READ after process restart',async()=>{
+  const t=await setup({},['--no-load']);t.store.bind('group','test','fake','ou_owner');
+  await t.gateway.message(t.msg('remember','WRITE_HISTORY_CANARY','ou_owner',true));await t.wait('COMPLETED');
+  const conv=t.store.db.prepare('SELECT conversation_id FROM tasks').get() as {conversation_id:string};
+  expect(t.conversations.context(conv.conversation_id,'owner-write')).toContain('WRITE_HISTORY_CANARY');
+  expect(t.conversations.context(conv.conversation_id,'group-read')).not.toContain('WRITE_HISTORY_CANARY');
+  await t.tasks.close();
+  const tasks=new TaskManager(t.config,t.store,t.owner,t.views,t.conversations,t.channel,join(t.root,'state'),pino({enabled:false}));
+  try{
+    const id=tasks.submit(t.msg('continued','continue','ou_owner',true),t.store.conversation(conv.conversation_id),'owner-write');
+    for(let i=0;i<400&&t.store.task(id)?.status!=='COMPLETED';i++)await new Promise(r=>setTimeout(r,15));
+    expect(t.store.task(id)?.status).toBe('COMPLETED');
+    expect((t.store.db.prepare('SELECT result_text FROM tasks WHERE id=?').get(id) as {result_text:string}).result_text).toContain('WRITE_HISTORY_CANARY');
+    expect(t.conversations.context(conv.conversation_id,'group-read')).not.toContain('WRITE_HISTORY_CANARY');
+  }finally{await tasks.close()}
+});
+it('failed final delivery retains successful result and /retry resends without executing Agent again',async()=>{
+  const t=await setup();const update=t.channel.updateCard;let fail=true;
+  t.channel.updateCard=async(id,card)=>{
+    if(fail&&JSON.stringify(card).includes('COMPLETED'))throw new Error('DELIVERY_FAILED');
+    await update(id,card);
+  };
+  await t.gateway.message(t.msg('result','hello'));
+  let row:{id:string;status:string;error:string|null;delivery_status:string;result_text:string}|undefined;
+  for(let i=0;i<400;i++){row=t.store.db.prepare('SELECT * FROM tasks').get() as typeof row;if(row?.delivery_status==='FAILED')break;await new Promise(r=>setTimeout(r,15))}
+  expect(row?.status).toBe('COMPLETED');expect(row?.error).toBeNull();expect(row?.result_text).toContain('answer:hello');
+  expect(await t.tasks.retryDelivery(row!.id,'ou_member','dm')).toBe(false);
+  expect(await t.tasks.retryDelivery(row!.id,'ou_owner','other-chat')).toBe(false);
+  fail=false;await t.gateway.message(t.msg('retry','/retry '+row!.id));
+  expect(t.store.db.prepare('SELECT delivery_status FROM tasks WHERE id=?').get(row!.id)).toEqual({delivery_status:'DELIVERED'});
+  expect(t.store.db.prepare('SELECT count(*) n FROM tasks').get()).toEqual({n:1});
+});
+it('cancelling pending permission returns ACP cancelled; explicit reject remains selected/reject_once',async()=>{
+  const t=await setup();const c=t.conversations.findOrCreate('dm',true,'','test','fake');
+  t.store.db.prepare('INSERT INTO tasks(id,conversation_id,requester_id,input_message_id,input_text,chat_type,status,created_at) VALUES(?,?,?,?,?,?,?,?)').run('cancel-permission',c.id,'ou_owner','cancel-permission-msg','permission','p2p','RUNNING',Date.now());
+  const manager=new ApprovalManager(t.store,t.owner,t.channel,()=>{});
+  const request={sessionId:'s',toolCall:{toolCallId:'t',title:'permission'},options:[{optionId:'a',name:'Allow',kind:'allow_once' as const},{optionId:'r',name:'Reject',kind:'reject_once' as const}]};
+  const decision=manager.request(t.store.task('cancel-permission')!,'s','owner-write',request);
+  manager.cancelTask('cancel-permission');expect(await decision).toEqual({outcome:{outcome:'cancelled'}});
+  t.store.db.prepare("UPDATE tasks SET status='CANCELLED' WHERE id='cancel-permission'").run();
+  expect(await manager.request(t.store.task('cancel-permission')!,'s','owner-write',request)).toEqual({outcome:{outcome:'cancelled'}});
+  manager.close();
 });
 it('unbound group auto-creates only for Owner tasks, binds and completes without setup commands',async()=>{
   const t=await setup();await t.gateway.message(t.msg('auto-denied','hello','ou_member',true));

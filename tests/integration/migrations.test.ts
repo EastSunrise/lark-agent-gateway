@@ -1,0 +1,20 @@
+import {it,expect} from 'vitest';
+import {mkdirSync,mkdtempSync,readFileSync} from 'node:fs';
+import {resolve,join} from 'node:path';
+import Database from 'better-sqlite3';
+import {openDatabase} from '../../src/storage/database.js';
+it('upgrades a v2 database once, keeps data, and separates legacy group READ and private WRITE history',()=>{
+  mkdirSync('.test-tmp',{recursive:true});const root=mkdtempSync(resolve('.test-tmp/migrate-'));const path=join(root,'state.db');
+  let db=new Database(path);
+  db.exec(readFileSync('src/storage/migrations/0001.sql','utf8'));db.exec(readFileSync('src/storage/migrations/0002.sql','utf8'));
+  const insert=db.prepare('INSERT INTO conversations(id,lookup_key,chat_id,thread_key,repo_id,agent_name,summary,created_at,last_active_at) VALUES(?,?,?,?,?,?,?,?,?)');
+  insert.run('dm','dm','chat-dm',null,'r','a','DM_PRIVATE_HISTORY',1,1);
+  insert.run('group','group','chat-group','thread','r','a','GROUP_READ_HISTORY',1,1);
+  db.close();db=openDatabase(root);
+  expect(db.prepare('SELECT profile,summary FROM conversation_summaries WHERE conversation_id=?').get('dm')).toEqual({profile:'owner-write',summary:'DM_PRIVATE_HISTORY'});
+  expect(db.prepare('SELECT profile,summary FROM conversation_summaries WHERE conversation_id=?').get('group')).toEqual({profile:'group-read',summary:'GROUP_READ_HISTORY'});
+  db.close();db=openDatabase(root);
+  expect(db.prepare('SELECT count(*) n FROM conversations').get()).toEqual({n:2});
+  expect(db.prepare('SELECT count(*) n FROM schema_migrations').get()).toEqual({n:3});
+  db.close();
+});
